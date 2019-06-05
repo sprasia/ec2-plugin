@@ -1,5 +1,6 @@
 package hudson.plugins.ec2;
 
+import com.google.common.collect.Lists;
 import hudson.Extension;
 import hudson.model.Descriptor.FormException;
 import hudson.model.Node;
@@ -79,9 +80,18 @@ public final class EC2OndemandSlave extends EC2AbstractSlave {
                 LOGGER.info("EC2 instance already terminated: " + getInstanceId());
             } else {
                 AmazonEC2 ec2 = getCloud().connect();
-                TerminateInstancesRequest request = new TerminateInstancesRequest(Collections.singletonList(getInstanceId()));
-                ec2.terminateInstances(request);
-                LOGGER.info("Terminated EC2 instance (terminated): " + getInstanceId());
+                if (!stopOnTerminate) {
+                    TerminateInstancesRequest request = new TerminateInstancesRequest(Collections.singletonList(getInstanceId()));
+                    ec2.terminateInstances(request);
+                    LOGGER.info("Terminated EC2 instance (terminated): " + getInstanceId());
+                } else {
+                    LOGGER.info("EC2 instance needs to be terminated manually because stopOnTerminate is set: " + getInstanceId());
+                    final Tag tag = new Tag(EC2Tag.TAG_NAME_JENKINS_SLAVE_TYPE, "FOR_MANUAL_TERMINATION");
+                    final CreateTagsRequest request = new CreateTagsRequest(Lists.newArrayList(getInstanceId()), Lists.newArrayList(tag));
+
+                    ec2.createTags(request);
+                    stop();
+                }
             }
             Jenkins.get().removeNode(this);
             LOGGER.info("Removed EC2 instance from jenkins master: " + getInstanceId());
