@@ -42,6 +42,11 @@ public class UnixData extends AMITypeData {
         return true;
     }
 
+    @Override
+    public boolean isThroughSsh() {
+        return true;
+    }
+
     @Extension
     public static class DescriptorImpl extends Descriptor<AMITypeData> {
         @Override

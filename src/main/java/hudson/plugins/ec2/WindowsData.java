@@ -31,6 +31,11 @@ public class WindowsData extends AMITypeData {
         return false;
     }
 
+    @Override
+    public boolean isThroughSsh() {
+        return false;
+    }
+
     public Secret getPassword() {
         return password;
     }

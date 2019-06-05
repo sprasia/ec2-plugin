@@ -53,7 +53,7 @@ public final class EC2OndemandSlave extends EC2AbstractSlave {
     public EC2OndemandSlave(String name, String instanceId, String description, String remoteFS, int numExecutors, String labelString, Mode mode, String initScript, String tmpDir, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, boolean stopOnTerminate, String idleTerminationMinutes, String publicDNS, String privateDNS, List<EC2Tag> tags, String cloudName, boolean useDedicatedTenancy, int launchTimeout, AMITypeData amiType, ConnectionStrategy connectionStrategy, int maxTotalUses)
             throws FormException, IOException {
 
-        super(name, instanceId, description, remoteFS, numExecutors, mode, labelString, amiType.isWindows() ? new EC2WindowsLauncher()
+        super(name, instanceId, description, remoteFS, numExecutors, mode, labelString, amiType.isWindows() ? (amiType.isThroughSsh() ? new hudson.plugins.ec2.ssh.EC2WindowsLauncher() : new EC2WindowsLauncher())
                 : new EC2UnixLauncher(), new EC2RetentionStrategy(idleTerminationMinutes), initScript, tmpDir, nodeProperties, remoteAdmin, jvmopts, stopOnTerminate, idleTerminationMinutes, tags, cloudName, useDedicatedTenancy, launchTimeout, amiType, connectionStrategy, maxTotalUses);
 
         this.publicDNS = publicDNS;
