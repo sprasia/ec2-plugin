@@ -1,6 +1,5 @@
 package hudson.plugins.ec2.win;
 
-import com.google.common.net.HostAndPort;
 import hudson.model.Descriptor;
 import hudson.model.TaskListener;
 import hudson.plugins.ec2.EC2AbstractSlave;
@@ -25,6 +24,8 @@ import org.apache.commons.io.IOUtils;
 
 import com.amazonaws.AmazonClientException;
 import com.amazonaws.services.ec2.model.Instance;
+import com.amazonaws.services.ec2.model.GetPasswordDataRequest;
+import com.amazonaws.services.ec2.model.GetPasswordDataResult;
 
 public class EC2WindowsLauncher extends EC2ComputerLauncher {
     private static final String AGENT_JAR = "remoting.jar";
@@ -48,7 +49,12 @@ public class EC2WindowsLauncher extends EC2ComputerLauncher {
                     : "C:\\Windows\\Temp\\");
 
             logger.println("Creating tmp directory if it does not exist");
-            connection.execute("if not exist " + tmpDir + " mkdir " + tmpDir);
+            WindowsProcess mkdirProcess = connection.execute("if not exist " + tmpDir + " mkdir " + tmpDir);
+            int exitCode = mkdirProcess.waitFor();
+            if (exitCode != 0) {
+                logger.println("Creating tmpdir failed=" + exitCode);
+                return;
+            }
 
             if (initScript != null && initScript.trim().length() > 0 && !connection.exists(tmpDir + ".jenkins-init")) {
                 logger.println("Executing init script");
@@ -79,7 +85,8 @@ public class EC2WindowsLauncher extends EC2ComputerLauncher {
 
             final String jvmopts = node.jvmopts;
             final String remoteFS = WindowsUtil.quoteArgument(node.getRemoteFS());
-            final String launchString = "java " + (jvmopts != null ? jvmopts : "") + " -jar " + tmpDir + AGENT_JAR + " -workDir " + remoteFS;
+            final String workDir = Util.fixEmptyAndTrim(remoteFS) != null ? remoteFS : tmpDir;
+            final String launchString = "java " + (jvmopts != null ? jvmopts : "") + " -jar " + tmpDir + AGENT_JAR + " -workDir " + workDir;
             logger.println("Launching via WinRM:" + launchString);
             final WindowsProcess process = connection.execute(launchString, 86400);
             computer.setChannel(process.getStdout(), process.getStdin(), logger, new Listener() {
@@ -113,6 +120,7 @@ public class EC2WindowsLauncher extends EC2ComputerLauncher {
 
         logger.println(node.getDisplayName() + " booted at " + node.getCreatedTime());
         boolean alreadyBooted = (startTime - node.getCreatedTime()) > TimeUnit.MINUTES.toMillis(3);
+        WinConnection connection = null;
         while (true) {
             try {
                 long waitTime = System.currentTimeMillis() - startTime;
@@ -120,19 +128,44 @@ public class EC2WindowsLauncher extends EC2ComputerLauncher {
                     throw new AmazonClientException("Timed out after " + (waitTime / 1000)
                             + " seconds of waiting for winrm to be connected");
                 }
-                Instance instance = computer.updateInstanceDescription();
-                String host = EC2HostAddressProvider.windows(instance, computer.getSlaveTemplate().connectionStrategy).getHostText();
 
-                if ("0.0.0.0".equals(host)) {
-                    logger.println("Invalid host 0.0.0.0, your host is most likely waiting for an ip address.");
-                    throw new IOException("goto sleep");
+                if (connection == null) {
+                    Instance instance = computer.updateInstanceDescription();
+                    String host = EC2HostAddressProvider.windows(instance, computer.getSlaveTemplate().connectionStrategy);
+
+                    if ("0.0.0.0".equals(host)) {
+                        logger.println("Invalid host 0.0.0.0, your host is most likely waiting for an ip address.");
+                        throw new IOException("goto sleep");
+                    }
+
+                    if (!node.isSpecifyPassword()) {
+                        GetPasswordDataResult result;
+                        try {
+                            result = node.getCloud().connect().getPasswordData(new GetPasswordDataRequest(instance.getInstanceId()));
+                        } catch (Exception e) {
+                            logger.println("Unexpected Exception: " + e.toString());
+                            Thread.sleep(sleepBetweenAttempts);
+                            continue;
+                        }
+                        String passwordData = result.getPasswordData();
+                        if (passwordData == null || passwordData.isEmpty()) {
+                            logger.println("Waiting for password to be available. Sleeping 10s.");
+                            Thread.sleep(sleepBetweenAttempts);
+                            continue;
+                        }
+                        String password = node.getCloud().getPrivateKey().decryptWindowsPassword(passwordData);
+                        if (!node.getRemoteAdmin().equals("Administrator")) {
+                            logger.println("WARNING: For password retrieval remote admin must be Administrator, ignoring user provided value");
+                        }
+                        logger.println("Connecting to " + "(" + host + ") with WinRM as Administrator");
+                        connection = new WinConnection(host, "Administrator", password);
+                    } else { //password Specified
+                        logger.println("Connecting to " + "(" + host + ") with WinRM as " + node.getRemoteAdmin());
+                        connection = new WinConnection(host, node.getRemoteAdmin(), node.getAdminPassword().getPlainText());
+                    }
+                    connection.setUseHTTPS(node.isUseHTTPS());
                 }
 
-                logger.println("Connecting to " + "(" + host + ") with WinRM as " + node.remoteAdmin);
-
-                WinConnection connection = new WinConnection(host, node.remoteAdmin, node.getAdminPassword().getPlainText());
-
-                connection.setUseHTTPS(node.isUseHTTPS());
                 if (!connection.ping()) {
                     logger.println("Waiting for WinRM to come up. Sleeping 10s.");
                     Thread.sleep(sleepBetweenAttempts);

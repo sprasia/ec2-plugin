@@ -1,6 +1,6 @@
 package hudson.plugins.ec2.win.winrm;
 
-import com.google.common.io.Closeables;
+import hudson.plugins.ec2.util.Closeables;
 import hudson.remoting.FastPipedInputStream;
 import hudson.remoting.FastPipedOutputStream;
 import java.io.IOException;
@@ -72,6 +72,7 @@ public class WindowsProcess {
             } finally {
                 client.deleteShell();
                 terminated = true;
+                Closeables.closeQuietly(toCallersStdin);
             }
             return client.exitCode();
         } catch (InterruptedException exc) {
@@ -88,6 +89,12 @@ public class WindowsProcess {
         client.signal();
         client.deleteShell();
         terminated = true;
+        Closeables.closeQuietly(toCallersStdout);
+        Closeables.closeQuietly(toCallersStdin);
+        Closeables.closeQuietly(toCallersStderr);
+        Closeables.closeQuietly(callersStdout);
+        Closeables.closeQuietly(callersStdin);
+        Closeables.closeQuietly(callersStderr);
     }
 
     private void startStdoutCopyThread() {

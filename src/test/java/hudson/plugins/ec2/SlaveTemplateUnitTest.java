@@ -7,7 +7,6 @@ import com.amazonaws.services.ec2.model.CreateTagsResult;
 import com.amazonaws.services.ec2.model.InstanceType;
 import com.amazonaws.services.ec2.model.Tag;
 import hudson.model.Node;
-import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.powermock.reflect.Whitebox;
@@ -24,21 +23,14 @@ import static org.junit.Assert.assertTrue;
 
 public class SlaveTemplateUnitTest {
 
-    Logger logger;
-    TestHandler handler;
+    private Logger logger;
+    private TestHandler handler;
 
     @Before
     public void setUp() throws Exception {
-        AmazonEC2Cloud.setTestMode(true);
-
         handler = new TestHandler();
         logger = Logger.getLogger(SlaveTemplate.class.getName());
         logger.addHandler(handler);
-    }
-
-    @After
-    public void tearDown() throws Exception {
-        AmazonEC2Cloud.setTestMode(false);
     }
 
     @Test

@@ -12,38 +12,47 @@ import java.net.URL;
 import java.security.KeyManagementException;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
-import java.security.UnrecoverableKeyException;
+import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import org.apache.commons.codec.binary.Base64;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.ParseException;
+import org.apache.http.auth.AuthSchemeProvider;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.methods.HttpPost;
-import org.apache.http.client.params.AuthPolicy;
-import org.apache.http.client.protocol.ClientContext;
+import org.apache.http.client.config.AuthSchemes;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.HttpClient;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.config.Lookup;
+import org.apache.http.config.RegistryBuilder;
+import org.apache.http.config.SocketConfig;
+import org.apache.http.conn.HttpClientConnectionManager;
 import org.apache.http.conn.HttpHostConnectException;
-import org.apache.http.conn.scheme.Scheme;
-import org.apache.http.conn.ssl.AllowAllHostnameVerifier;
-import org.apache.http.conn.ssl.SSLSocketFactory;
+import org.apache.http.conn.socket.ConnectionSocketFactory;
+import org.apache.http.conn.ssl.NoopHostnameVerifier;
+import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.conn.ssl.TrustSelfSignedStrategy;
 import org.apache.http.entity.StringEntity;
+import org.apache.http.impl.auth.BasicSchemeFactory;
 import org.apache.http.impl.client.BasicAuthCache;
 import org.apache.http.impl.client.BasicCredentialsProvider;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.params.CoreConnectionPNames;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.impl.conn.BasicHttpClientConnectionManager;
 import org.apache.http.protocol.BasicHttpContext;
 import org.apache.http.protocol.HttpContext;
+import org.apache.http.ssl.SSLContextBuilder;
 import org.apache.http.util.EntityUtils;
 import org.dom4j.Document;
 import org.dom4j.DocumentException;
 import org.dom4j.DocumentHelper;
 import org.dom4j.Element;
+import org.dom4j.Node;
 import org.dom4j.XPath;
 import org.jaxen.SimpleNamespaceContext;
 
@@ -65,7 +74,6 @@ public class WinRMClient {
 
     private final ThreadLocal<BasicAuthCache> authCache = new ThreadLocal<BasicAuthCache>();
     private boolean useHTTPS;
-    private Scheme httpsScheme;
     private BasicCredentialsProvider credsProvider;
 
     public WinRMClient(URL url, String username, String password) {
@@ -132,14 +140,16 @@ public class WinRMClient {
         namespaceContext.addNamespace(Namespaces.NS_WIN_SHELL.getPrefix(), Namespaces.NS_WIN_SHELL.getURI());
         xpath.setNamespaceContext(namespaceContext);
 
-        Base64 base64 = new Base64();
-        for (Element e : (List<Element>) xpath.selectNodes(response)) {
-            FastPipedOutputStream stream = streams.get(e.attribute("Name").getText().toLowerCase());
-            final byte[] decode = base64.decode(e.getText());
-            log.log(Level.FINE, "piping " + decode.length + " bytes from "
-                    + e.attribute("Name").getText().toLowerCase());
+        for (Object node : xpath.selectNodes(response)) {
+            if (node instanceof Element) {
+                Element e = (Element) node;
+                FastPipedOutputStream stream = streams.get(e.attribute("Name").getText().toLowerCase());
+                final byte[] decode = Base64.getDecoder().decode(e.getText());
+                log.log(Level.FINE, "piping " + decode.length + " bytes from "
+                        + e.attribute("Name").getText().toLowerCase());
 
-            stream.write(decode);
+                stream.write(decode);
+            }
         }
 
         XPath done = DocumentHelper.createXPath("//*[@State='http://schemas.microsoft.com/wbem/wsman/1/windows/shell/CommandState/Done']");
@@ -160,11 +170,11 @@ public class WinRMClient {
 
     private static String first(Document doc, String selector) {
         XPath xpath = DocumentHelper.createXPath(selector);
-        try {
-            return Iterables.get((List<Element>) xpath.selectNodes(doc), 0).getText();
-        } catch (IndexOutOfBoundsException e) {
-            throw new RuntimeException("Malformed response for " + selector + " in " + doc.asXML());
+        List<Node> nodes = xpath.selectNodes(doc);
+        if (!nodes.isEmpty() && nodes.get(0) instanceof Element) {
+            return nodes.get(0).getText();
         }
+        throw new RuntimeException("Malformed response for " + selector + " in " + doc.asXML());
     }
 
     private void setupHTTPClient() {
@@ -172,15 +182,40 @@ public class WinRMClient {
         credsProvider.setCredentials(new AuthScope(AuthScope.ANY_HOST, AuthScope.ANY_PORT), new UsernamePasswordCredentials(username, password));
     }
 
-    private DefaultHttpClient buildHTTPClient() {
-        DefaultHttpClient httpclient = new DefaultHttpClient();
-        if(! (username.contains("\\")|| username.contains("/"))){
+    private HttpClient buildHTTPClient() {
+        HttpClientBuilder builder = HttpClientBuilder.create().setDefaultCredentialsProvider(credsProvider);
+        if(! (username.contains("\\")|| username.contains("/"))) {
             //user is not a domain user
-            httpclient.getAuthSchemes().register(AuthPolicy.SPNEGO,new NegotiateNTLMSchemaFactory());
+            Lookup<AuthSchemeProvider> authSchemeRegistry = RegistryBuilder.<AuthSchemeProvider>create()
+                                                            .register(AuthSchemes.BASIC, new BasicSchemeFactory())
+                                                            .register(AuthSchemes.SPNEGO,new NegotiateNTLMSchemaFactory())
+                                                            .build();
+            builder.setDefaultAuthSchemeRegistry(authSchemeRegistry);
         }
-        httpclient.setCredentialsProvider(credsProvider);
-        httpclient.getParams().setParameter(CoreConnectionPNames.CONNECTION_TIMEOUT, 5000);
-        // httpclient.setHttpRequestRetryHandler(new WinRMRetryHandler());
+        if (useHTTPS) {
+            try {
+                SSLConnectionSocketFactory sslConnectionFactory = new SSLConnectionSocketFactory(
+                                                                  new SSLContextBuilder().loadTrustMaterial(null, new TrustSelfSignedStrategy()).build(),
+                                                                  NoopHostnameVerifier.INSTANCE);
+                builder.setSSLSocketFactory(sslConnectionFactory);
+                Lookup<ConnectionSocketFactory> registry = RegistryBuilder.<ConnectionSocketFactory>create()
+                                                                .register("https", sslConnectionFactory)
+                                                                .build();
+                HttpClientConnectionManager ccm = new BasicHttpClientConnectionManager(registry);
+                builder.setConnectionManager(ccm);
+            } catch (KeyStoreException | KeyManagementException | NoSuchAlgorithmException e) {
+            }
+        }
+        RequestConfig requestConfig = RequestConfig.custom()
+                                      .setConnectTimeout(5000)
+                                      .setSocketTimeout(0)
+                                      .build();
+        builder.setDefaultRequestConfig(requestConfig);
+        SocketConfig socketConfig = SocketConfig.custom()
+                                    .setTcpNoDelay(true)
+                                    .build();
+        builder.setDefaultSocketConfig(socketConfig);
+        HttpClient httpclient = builder.build();
         return httpclient;
     }
 
@@ -193,18 +228,14 @@ public class WinRMClient {
             throw new RuntimeException("Too many retry for request");
         }
 
-        DefaultHttpClient httpclient = buildHTTPClient();
+        HttpClient httpclient = buildHTTPClient();
         HttpContext context = new BasicHttpContext();
 
         if (authCache.get() == null) {
             authCache.set(new BasicAuthCache());
         }
 
-        context.setAttribute(ClientContext.AUTH_CACHE, authCache.get());
-
-        if (useHTTPS) {
-            httpclient.getConnectionManager().getSchemeRegistry().register(httpsScheme);
-        }
+        context.setAttribute(HttpClientContext.AUTH_CACHE, authCache.get());
 
         try {
             HttpPost post = new HttpPost(url.toURI());
@@ -236,7 +267,7 @@ public class WinRMClient {
                         // throw away our auth cache
                         log.log(Level.WARNING, "winrm returned 401 - shouldn't happen though - retrying in 2 minutes");
                         try {
-                            Thread.sleep(TimeUnit.MINUTES.toMillis(3));
+                            Thread.sleep(TimeUnit.MINUTES.toMillis(2));
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                         }
@@ -293,15 +324,5 @@ public class WinRMClient {
 
     public void setUseHTTPS(boolean useHTTPS) {
         this.useHTTPS = useHTTPS;
-        if (useHTTPS) {
-            SSLSocketFactory socketFactory;
-            try {
-                socketFactory = new SSLSocketFactory(new TrustSelfSignedStrategy(), new AllowAllHostnameVerifier());
-                httpsScheme = new Scheme("https", 443, socketFactory);
-            } catch (KeyManagementException | UnrecoverableKeyException | KeyStoreException | NoSuchAlgorithmException e) {
-            }
-        }else{
-            httpsScheme=null;
-        }
     }
 }

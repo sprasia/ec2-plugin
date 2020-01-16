@@ -93,18 +93,12 @@ public class EC2UnixLauncher extends EC2ComputerLauncher {
             readinessSleepMs = Integer.parseInt(prop);
     }
 
-    private final int FAILED = -1;
-
     protected void log(Level level, EC2Computer computer, TaskListener listener, String message) {
-        EC2Cloud cloud = computer.getCloud();
-        if (cloud != null)
-            cloud.log(LOGGER, level, listener, message);
+        EC2Cloud.log(LOGGER, level, listener, message);
     }
 
     protected void logException(EC2Computer computer, TaskListener listener, String message, Throwable exception) {
-        EC2Cloud cloud = computer.getCloud();
-        if (cloud != null)
-            cloud.log(LOGGER, Level.WARNING, listener, message, exception);
+        EC2Cloud.log(LOGGER, Level.WARNING, listener, message, exception);
     }
 
     protected void logInfo(EC2Computer computer, TaskListener listener, String message) {
@@ -235,7 +229,8 @@ public class EC2UnixLauncher extends EC2ComputerLauncher {
             final String prefix = computer.getSlaveCommandPrefix();
             final String suffix = computer.getSlaveCommandSuffix();
             final String remoteFS = node.getRemoteFS();
-            String launchString = prefix + " java " + (jvmopts != null ? jvmopts : "") + " -jar " + tmpDir + "/remoting.jar -workDir " + remoteFS + suffix;
+            final String workDir = Util.fixEmptyAndTrim(remoteFS) != null ? remoteFS : tmpDir;
+            String launchString = prefix + " java " + (jvmopts != null ? jvmopts : "") + " -jar " + tmpDir + "/remoting.jar -workDir " + workDir + suffix;
            // launchString = launchString.trim();
 
             SlaveTemplate slaveTemplate = computer.getSlaveTemplate();
@@ -322,8 +317,8 @@ public class EC2UnixLauncher extends EC2ComputerLauncher {
             boolean isAuthenticated = false;
             logInfo(computer, listener, "Getting keypair...");
             KeyPair key = computer.getCloud().getKeyPair();
-            logInfo(computer, listener, "Using key: " + key.getKeyName() + "\n" + key.getKeyFingerprint() + "\n"
-                    + key.getKeyMaterial().substring(0, 160));
+            logInfo(computer, listener,
+                String.format("Using private key %s (SHA-1 fingerprint %s)", key.getKeyName(), key.getKeyFingerprint()));
             while (tries-- > 0) {
                 logInfo(computer, listener, "Authenticating as " + computer.getRemoteAdmin());
                 try {
@@ -365,6 +360,13 @@ public class EC2UnixLauncher extends EC2ComputerLauncher {
                             + (timeout / 1000) + ")");
                 }
                 String host = getEC2HostAddress(computer);
+
+                if ((node instanceof EC2SpotSlave) && computer.getInstanceId() == null) {
+                     // getInstanceId() on EC2SpotSlave can return null if the spot request doesn't yet know
+                     // the instance id that it is starting. Continue to wait until the instanceId is set.
+                    logInfo(computer, listener, "empty instanceId for Spot Slave.");
+                    throw new IOException("goto sleep");
+                }
 
                 if ("0.0.0.0".equals(host)) {
                     logWarning(computer, listener, "Invalid host 0.0.0.0, your host is most likely waiting for an ip address.");

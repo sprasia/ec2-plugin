@@ -29,6 +29,7 @@ import hudson.model.Descriptor;
 import hudson.model.Descriptor.FormException;
 import hudson.model.Node;
 import hudson.model.Slave;
+import hudson.plugins.ec2.util.AmazonEC2Factory;
 import hudson.slaves.NodeProperty;
 import hudson.slaves.ComputerLauncher;
 import hudson.slaves.RetentionStrategy;
@@ -135,7 +136,7 @@ public abstract class EC2AbstractSlave extends Slave {
 
     public static final String TEST_ZONE = "testZone";
 
-    public EC2AbstractSlave(String name, String instanceId, String description, String remoteFS, int numExecutors, Mode mode, String labelString, ComputerLauncher launcher, RetentionStrategy<EC2Computer> retentionStrategy, String initScript, String tmpDir, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, boolean stopOnTerminate, String idleTerminationMinutes, List<EC2Tag> tags, String cloudName, boolean useDedicatedTenancy, int launchTimeout, AMITypeData amiType, ConnectionStrategy connectionStrategy, int maxTotalUses)
+    public EC2AbstractSlave(String name, String instanceId, String templateDescription, String remoteFS, int numExecutors, Mode mode, String labelString, ComputerLauncher launcher, RetentionStrategy<EC2Computer> retentionStrategy, String initScript, String tmpDir, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, boolean stopOnTerminate, String idleTerminationMinutes, List<EC2Tag> tags, String cloudName, boolean useDedicatedTenancy, int launchTimeout, AMITypeData amiType, ConnectionStrategy connectionStrategy, int maxTotalUses)
             throws FormException, IOException {
 
         super(name, remoteFS, launcher);
@@ -146,7 +147,7 @@ public abstract class EC2AbstractSlave extends Slave {
         setNodeProperties(nodeProperties);
 
         this.instanceId = instanceId;
-        this.templateDescription = description;
+        this.templateDescription = templateDescription;
         this.initScript = initScript;
         this.tmpDir = tmpDir;
         this.remoteAdmin = remoteAdmin;
@@ -165,9 +166,9 @@ public abstract class EC2AbstractSlave extends Slave {
     }
 
     @Deprecated
-    public EC2AbstractSlave(String name, String instanceId, String description, String remoteFS, int numExecutors, Mode mode, String labelString, ComputerLauncher launcher, RetentionStrategy<EC2Computer> retentionStrategy, String initScript, String tmpDir, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, boolean stopOnTerminate, String idleTerminationMinutes, List<EC2Tag> tags, String cloudName, boolean usePrivateDnsName, boolean useDedicatedTenancy, int launchTimeout, AMITypeData amiType)
+    public EC2AbstractSlave(String name, String instanceId, String templateDescription, String remoteFS, int numExecutors, Mode mode, String labelString, ComputerLauncher launcher, RetentionStrategy<EC2Computer> retentionStrategy, String initScript, String tmpDir, List<? extends NodeProperty<?>> nodeProperties, String remoteAdmin, String jvmopts, boolean stopOnTerminate, String idleTerminationMinutes, List<EC2Tag> tags, String cloudName, boolean usePrivateDnsName, boolean useDedicatedTenancy, int launchTimeout, AMITypeData amiType)
             throws FormException, IOException {
-        this(name, instanceId, description, remoteFS, numExecutors, mode, labelString, launcher, retentionStrategy, initScript, tmpDir, nodeProperties, remoteAdmin, jvmopts, stopOnTerminate, idleTerminationMinutes, tags, cloudName, useDedicatedTenancy, launchTimeout, amiType, ConnectionStrategy.backwardsCompatible(usePrivateDnsName, false, false), -1);
+        this(name, instanceId, templateDescription, remoteFS, numExecutors, mode, labelString, launcher, retentionStrategy, initScript, tmpDir, nodeProperties, remoteAdmin, jvmopts, stopOnTerminate, idleTerminationMinutes, tags, cloudName, useDedicatedTenancy, launchTimeout, amiType, ConnectionStrategy.backwardsCompatible(usePrivateDnsName, false, false), -1);
     }
 
     @Override
@@ -183,6 +184,18 @@ public abstract class EC2AbstractSlave extends Slave {
 
         if (amiType == null) {
             amiType = new UnixData(rootCommandPrefix, slaveCommandPrefix, slaveCommandSuffix, Integer.toString(sshPort));
+        }
+
+        if (maxTotalUses == 0) {
+            EC2Cloud cloud = getCloud();
+            if (cloud != null) {
+                SlaveTemplate template = cloud.getTemplate(templateDescription);
+                if (template != null) {
+                    if (template.getMaxTotalUses() == -1) {
+                        maxTotalUses = -1;
+                    }
+                }
+            }
         }
 
         return this;
@@ -207,15 +220,25 @@ public abstract class EC2AbstractSlave extends Slave {
             return 2;
         case T3Nano:
             return 2;
+        case T3aNano:
+            return 2;
         case T3Micro:
+            return 2;
+        case T3aMicro:
             return 2;
         case T3Small:
             return 2;
+        case T3aSmall:
+            return 2;
         case T3Medium:
+            return 2;
+        case T3aMedium:
             return 2;
         case A1Large:
             return 2;
         case T3Large:
+            return 3;
+        case T3aLarge:
             return 3;
         case M1Large:
             return 4;
@@ -228,6 +251,8 @@ public abstract class EC2AbstractSlave extends Slave {
         case M5aLarge:
             return 4;
         case T3Xlarge:
+            return 5;
+        case T3aXlarge:
             return 5;
         case A1Xlarge:
             return 5;
@@ -246,6 +271,8 @@ public abstract class EC2AbstractSlave extends Slave {
         case M1Xlarge:
             return 8;
         case T32xlarge:
+            return 10;
+        case T3a2xlarge:
             return 10;
         case A12xlarge:
             return 10;
@@ -446,7 +473,7 @@ public abstract class EC2AbstractSlave extends Slave {
         return launchTimeout * 1000L;
     }
 
-    String getRemoteAdmin() {
+    public String getRemoteAdmin() {
         if (remoteAdmin == null || remoteAdmin.length() == 0)
             return amiType.isWindows() ? "Administrator" : "root";
         return remoteAdmin;
@@ -681,15 +708,15 @@ public abstract class EC2AbstractSlave extends Slave {
         return amiType.isWindows() ? ((WindowsData) amiType).getBootDelayInMillis() : 0;
     }
 
+    public boolean isSpecifyPassword() {
+        return amiType.isWindows() && ((WindowsData) amiType).isSpecifyPassword();
+    }
+
     public static ListBoxModel fillZoneItems(AWSCredentialsProvider credentialsProvider, String region) {
         ListBoxModel model = new ListBoxModel();
-        if (AmazonEC2Cloud.isTestMode()) {
-            model.add(TEST_ZONE);
-            return model;
-        }
 
         if (!StringUtils.isEmpty(region)) {
-            AmazonEC2 client = EC2Cloud.connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(region));
+            AmazonEC2 client = AmazonEC2Factory.getInstance().connect(credentialsProvider, AmazonEC2Cloud.getEc2EndpointUrl(region));
             DescribeAvailabilityZonesResult zones = client.describeAvailabilityZones();
             List<AvailabilityZone> zoneList = zones.getAvailabilityZones();
             model.add("<not specified>", "");
