@@ -1,6 +1,7 @@
 # ec2-plugin
 [![Jenkins](https://ci.jenkins.io/job/Plugins/job/ec2-plugin/job/master/badge/icon)](https://ci.jenkins.io/job/Plugins/job/ec2-plugin/job/master/)
 [![Jenkins Plugin](https://img.shields.io/jenkins/plugin/v/ec2.svg)](https://plugins.jenkins.io/ec2)
+[![GitHub release](https://img.shields.io/github/release/jenkinsci/ec2-plugin.svg?label=changelog)](https://github.com/jenkinsci/ec2-plugin/releases/latest)
 [![Gitter](https://badges.gitter.im/ec2-plugin/Lobby.svg)](https://gitter.im/ec2-plugin/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
 # Introduction
@@ -28,11 +29,8 @@ UI for configuring the EC2 plugin.  Then enter the Access Key and Secret
 Access Key which act like a username/password (see IAM section). Because
 of the way EC2 works, you also need to have an RSA private key that the
 cloud has the other half for, to permit sshing into the instances that
-are started. If you have already been using EC2 and have your own key,
-you can paste it here. Otherwise, you can have Jenkins generate one. If
-you let Jenkins generate one, you should save this private key in your
-file system as well, as you'll need this to interactively logon to EC2
-instances.
+are started. Please use the AWS console or any other tool of your choice
+to generate the private key to interactively log in to EC2 instances.
 
 Once you have put in your Access Key and Secret Access Key, select a
 region for the cloud (not shown in screenshot). You may define only one
